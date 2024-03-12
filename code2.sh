@@ -1,0 +1,1 @@
+sudo dd if=/dev/zero of=/media/$(df | grep '/dev/sd' | awk '{print $1}')/persistent.img bs=1M count=2048 && sudo mkfs.ext4 /media/$(df | grep '/dev/sd' | awk '{print $1}')/persistent.img && sudo mkdir /mnt/persistent && sudo mount /media/$(df | grep '/dev/sd' | awk '{print $1}')/persistent.img /mnt/persistent && sudo sed -i 's/linux/linux persistent/' /boot/grub/grub.cfg
