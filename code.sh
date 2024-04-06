@@ -2,138 +2,78 @@
 
 # Função para configurar o tamanho do cluster e tamanho do bloco
 configure_cluster_block_sizes() {
-    # Identifica o sistema de arquivos e tamanho do dispositivo
-    DEVICE_FILESYSTEM=$(lsblk -o FSTYPE "/dev/${USB_DEVICE}" | tail -n1)
-    DEVICE_SIZE=$(lsblk -b -o SIZE "/dev/${USB_DEVICE}" | tail -n1)
+    device_path="$1"
+    device_filesystem="$2"
+
+    # Determina o tamanho do dispositivo
+    device_size=$(lsblk -b -o SIZE "$device_path" | tail -n1)
 
     # Determina o tamanho do cluster e tamanho do bloco com base no tamanho do dispositivo
-    CLUSTER_SIZE=""
-    BLOCK_SIZE=""
-    if [ "$DEVICE_SIZE" -lt $((16 * 1024 * 1024 * 1024)) ]; then
-        CLUSTER_SIZE="4k"
-        BLOCK_SIZE="4k"
-    elif [ "$DEVICE_SIZE" -lt $((64 * 1024 * 1024 * 1024)) ]; then
-        CLUSTER_SIZE="8k"
-        BLOCK_SIZE="8k"
+    if (( device_size < (16 * 1024 * 1024 * 1024) )); then
+        cluster_size="4k"
+        block_size="4k"
+    elif (( device_size < (64 * 1024 * 1024 * 1024) )); then
+        cluster_size="8k"
+        block_size="8k"
     else
-        CLUSTER_SIZE="16k"
-        BLOCK_SIZE="16k"
+        cluster_size="16k"
+        block_size="16k"
     fi
 
     # Configura o tamanho do cluster e tamanho do bloco no sistema de arquivos
-    if [ "$DEVICE_FILESYSTEM" == "vfat" ]; then
-        fatresize "/dev/${USB_DEVICE}1" -s "$CLUSTER_SIZE"
+    if [[ "$device_filesystem" == "vfat" ]]; then
+        fatresize "$device_path"1 -s "$cluster_size"
     else
-        tune2fs "/dev/${USB_DEVICE}1" -o "$BLOCK_SIZE"
+        tune2fs "$device_path"1 -o "$block_size"
     fi
 
     echo "Configuração de tamanho de cluster e tamanho de bloco concluída com sucesso."
 }
 
 # Verifica se o sistema é o Kali Linux
-if [ "$(grep 'Kali' /etc/os-release)" == "" ]; then
+if ! grep -q 'Kali' /etc/os-release; then
     echo "Este script é destinado apenas ao Kali Linux."
     exit 1
 fi
 
-# Função para selecionar manualmente o dispositivo USB
-select_usb_device() {
-    # Lista os dispositivos USB disponíveis
-    echo "Dispositivos USB disponíveis:"
-    lsblk -o NAME,SIZE,TYPE,MOUNTPOINT | grep -i "disk" | awk '$4=="" {print NR".", $1, "\t", $2}'
-    echo
+# Detecta dispositivos USB conectados e filtra os que contêm o Kali Live
+kali_live_devices=($(lsblk -rno NAME,MODEL | grep -e 'KALI LIVE' | awk '{print "/dev/"$1}'))
 
-    # Solicita ao usuário para selecionar o dispositivo USB
-    read -p "Selecione o número do dispositivo USB: " choice
-    echo
-
-    # Valida a escolha do usuário
-    if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -gt 0 ] && [ "$choice" -le $usb_device_count ]; then
-        USB_DEVICE=${usb_devices[$((choice-1))]}
-    else
-        echo "Escolha inválida."
-        select_usb_device
-    fi
-}
-
-# Detecta automaticamente o dispositivo USB conectado
-usb_devices=($(lsblk -o NAME,SIZE,TYPE,MOUNTPOINT | grep -i "disk" | awk '$4=="" {print $1}'))
-usb_device_count=${#usb_devices[@]}
-if [ "$usb_device_count" -eq 0 ]; then
-    echo "Dispositivo USB não encontrado."
+if [[ ${#kali_live_devices[@]} -eq 0 ]]; then
+    echo "Nenhum dispositivo USB com Kali Live foi encontrado."
     exit 1
-elif [ "$usb_device_count" -eq 1 ]; then
-    USB_DEVICE=${usb_devices[0]}
+elif [[ ${#kali_live_devices[@]} -eq 1 ]]; then
+    kali_live_device="${kali_live_devices[0]}"
 else
-    echo "Vários dispositivos USB foram encontrados."
-    echo
-    echo "Selecione o dispositivo USB manualmente ou escolha a opção de execução automática:"
-    echo "1. Selecionar dispositivo USB manualmente"
-    echo "2. Executar todo o processo automaticamente"
-    echo
+    echo "Vários dispositivos USB com Kali Live foram encontrados."
+    echo -e "\nSelecione o dispositivo USB que contém o Kali Live:"
+    for ((i=0; i<${#kali_live_devices[@]}; i++)); do
+        echo "$((i+1)). ${kali_live_devices[i]}"
+    done
 
-    # Solicita ao usuário para selecionar uma opção
-    read -p "Escolha uma opção: " choice
-    echo
+    read -p $'\nEscolha uma opção: ' choice
 
-    case $choice in
-        1)
-            select_usb_device
-            ;;
-        2)
-            USB_DEVICE=${usb_devices[0]}
-            ;;
-        *)
-            echo "Opção inválida."
-            exit 1
-            ;;
-    esac
+    if [[ ! "$choice" =~ ^[0-9]+$ || "$choice" -lt 1 || "$choice" -gt ${#kali_live_devices[@]} ]]; then
+        echo "Opção inválida."
+        exit 1
+    fi
+
+    kali_live_device="${kali_live_devices[$((choice-1))]}"
 fi
 
-# Verifica se o dispositivo USB possui uma partição montada
-if grep -qs "/dev/${USB_DEVICE}" /proc/mounts; then
-    echo "O dispositivo USB está montado. Desmontando..."
-    umount "/dev/${USB_DEVICE}"* 2>/dev/null
-fi
+# Adiciona persistência ao Kali Live
+mkdir -p /mnt/usb-persistence
+mount -o remount,rw /lib/live/mount/persistence/Kali
+cp -r /lib/live/mount/persistence/Kali/* /mnt/usb-persistence
 
-# Desmonta qualquer partição existente no dispositivo USB
-umount "/dev/${USB_DEVICE}"* 2>/dev/null
-
-# Determina o tipo de partição mais recomendado para o pendrive
-PARTITION_TYPE=""
-USB_SIZE=$(lsblk -b -o SIZE "/dev/${USB_DEVICE}" | tail -n1)
-if [ "$USB_SIZE" -lt 2147483648 ]; then
-    PARTITION_TYPE="fat32"
-else
-    PARTITION_TYPE="ext4"
-fi
-
-# Cria uma partição para persistência
-parted -s "/dev/${USB_DEVICE}" mklabel msdos mkpart primary $PARTITION_TYPE 1M -1s set 1 boot on
-
-# Formata a partição com o tipo apropriado
-if [ "$PARTITION_TYPE" == "fat32" ]; then
-    mkfs.vfat "/dev/${USB_DEVICE}1"
-else
-    mkfs.ext4 "/dev/${USB_DEVICE}1"
-fi
-
-# Monta a partição persistente
-PERSISTENT_MOUNT_POINT="/mnt/usb-persistent"
-mkdir -p "$PERSISTENT_MOUNT_POINT"
-mount "/dev/${USB_DEVICE}1" "$PERSISTENT_MOUNT_POINT"
-
-# Configura o arquivo /etc/fstab para montar a partição persistente na inicialização
-echo "/dev/${USB_DEVICE}1    $PERSISTENT_MOUNT_POINT    $PARTITION_TYPE    defaults    0    0" >> /etc/fstab
-
-echo "Partição persistente configurada com sucesso."
+# Cria o arquivo persistence.conf com "/ union"
+echo "/ union" > /mnt/usb-persistence/persistence.conf
+echo "Persistência adicionada com sucesso."
 
 # Verifica se o usuário deseja configurar o tamanho do cluster e tamanho do bloco
-read -p "Deseja configurar o tamanho do cluster e tamanho do bloco? (s/n): " configure_choice
-echo
-
-if [ "$configure_choice" == "s" ] || [ "$configure_choice" == "S" ]; then
-    configure_cluster_block_sizes
+read -p $'Deseja configurar o tamanho do cluster e tamanho do bloco? (s/n): ' configure_choice
+if [[ "$configure_choice" =~ ^[Ss]$ ]]; then
+    configure_cluster_block_sizes "$kali_live_device" "ext4"
 fi
 
 exit 0
