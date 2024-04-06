@@ -1,4 +1,5 @@
 import subprocess
+import pyudev
 
 # Função para configurar o tamanho do cluster e tamanho do bloco
 def configure_cluster_block_sizes(device_path, device_filesystem):
@@ -32,73 +33,53 @@ with open('/etc/os-release', 'r') as f:
         print("Este script é destinado apenas ao Kali Linux.")
         exit(1)
 
-# Detecta automaticamente o dispositivo USB conectado
-devices = subprocess.check_output(['lsblk', '-o', 'NAME,SIZE,TYPE,MOUNTPOINT']).decode().splitlines()
-usb_devices = [line.split()[0] for line in devices if 'disk' in line and len(line.split()) < 4]
-usb_device_count = len(usb_devices)
+# Detecta dispositivos USB conectados
+context = pyudev.Context()
+usb_devices = [device for device in context.list_devices(subsystem='block', DEVTYPE='disk') if 'ID_MODEL' in device]
 
-if usb_device_count == 0:
-    print("Dispositivo USB não encontrado.")
+# Filtra os dispositivos que contêm o Kali Live
+kali_live_devices = []
+for device in usb_devices:
+    partitions = [part for part in device.children if part.get('ID_FS_LABEL') == 'KALI LIVE']
+    if partitions:
+        kali_live_devices.append(device.device_node)
+
+if not kali_live_devices:
+    print("Nenhum dispositivo USB com Kali Live foi encontrado.")
     exit(1)
-elif usb_device_count == 1:
-    usb_device = usb_devices[0]
+elif len(kali_live_devices) == 1:
+    kali_live_device = kali_live_devices[0]
 else:
-    print("Vários dispositivos USB foram encontrados.")
-    print("\nSelecione o dispositivo USB manualmente ou escolha a opção de execução automática:")
-    for i, device in enumerate(usb_devices):
+    print("Vários dispositivos USB com Kali Live foram encontrados.")
+    print("\nSelecione o dispositivo USB que contém o Kali Live:")
+    for i, device in enumerate(kali_live_devices):
         print(f"{i + 1}. {device}")
 
     choice = input("\nEscolha uma opção: ")
     try:
         choice = int(choice)
-        if choice < 1 or choice > usb_device_count:
+        if choice < 1 or choice > len(kali_live_devices):
             raise ValueError
     except ValueError:
         print("Opção inválida.")
         exit(1)
 
-    usb_device = usb_devices[choice - 1]
+    kali_live_device = kali_live_devices[choice - 1]
 
-# Verifica se o dispositivo USB possui uma partição montada
-if any(usb_device in line for line in devices if usb_device in line and len(line.split()) == 4):
-    print("O dispositivo USB está montado. Desmontando...")
-    subprocess.run(['umount', f"/dev/{usb_device}*"], stderr=subprocess.DEVNULL)
+# Adiciona persistência ao Kali Live
+subprocess.run(['mkdir', '-p', '/mnt/usb-persistence'])
+subprocess.run(['mount', '-o', 'remount,rw', '/lib/live/mount/persistence/Kali'])
+subprocess.run(['cp', '-r', '/lib/live/mount/persistence/Kali/*', '/mnt/usb-persistence'])
 
-# Desmonta qualquer partição existente no dispositivo USB
-subprocess.run(['umount', f"/dev/{usb_device}*"], stderr=subprocess.DEVNULL)
+# Cria o arquivo persistence.conf com "/ union"
+with open('/mnt/usb-persistence/persistence.conf', 'w') as f:
+    f.write("/ union\n")
 
-# Determina o tipo de partição mais recomendado para o pendrive
-partition_type = ""
-usb_size = int(subprocess.check_output(['lsblk', '-b', '-o', 'SIZE', f"/dev/{usb_device}"]).decode().splitlines()[-1])
-
-if usb_size < 2147483648:
-    partition_type = "fat32"
-else:
-    partition_type = "ext4"
-
-# Cria uma partição para persistência
-subprocess.run(['parted', '-s', f"/dev/{usb_device}", 'mklabel', 'msdos', 'mkpart', 'primary', partition_type, '1M', '-1s', 'set', '1', 'boot', 'on'])
-
-# Formata a partição com o tipo apropriado
-if partition_type == "fat32":
-    subprocess.run(['mkfs.vfat', f"/dev/{usb_device}1"])
-else:
-    subprocess.run(['mkfs.ext4', f"/dev/{usb_device}1"])
-
-# Monta a partição persistente
-persistent_mount_point = "/mnt/usb-persistent"
-subprocess.run(['mkdir', '-p', persistent_mount_point])
-subprocess.run(['mount', f"/dev/{usb_device}1", persistent_mount_point])
-
-# Configura o arquivo /etc/fstab para montar a partição persistente na inicialização
-with open('/etc/fstab', 'a') as f:
-    f.write(f"/dev/{usb_device}1    {persistent_mount_point}    {partition_type}    defaults    0    0\n")
-
-print("Partição persistente configurada com sucesso.")
+print("Persistência adicionada com sucesso.")
 
 # Verifica se o usuário deseja configurar o tamanho do cluster e tamanho do bloco
 configure_choice = input("Deseja configurar o tamanho do cluster e tamanho do bloco? (s/n): ")
 if configure_choice.lower() == "s":
-    configure_cluster_block_sizes(f"/dev/{usb_device}", partition_type)
+    configure_cluster_block_sizes(kali_live_device, "ext4")
 
 exit(0)
