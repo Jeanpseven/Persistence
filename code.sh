@@ -37,28 +37,11 @@ if ! grep -q 'Kali' /etc/os-release; then
 fi
 
 # Detecta dispositivos USB conectados e filtra os que contêm o Kali Live
-kali_live_devices=($(lsblk -rno NAME,MODEL | grep -e 'KALI LIVE' | awk '{print "/dev/"$1}'))
+kali_live_device=$(lsblk -nrpo NAME,MODEL | grep -i 'KALI LIVE' | awk '{print "/dev/"$1}')
 
-if [[ ${#kali_live_devices[@]} -eq 0 ]]; then
+if [[ -z "$kali_live_device" ]]; then
     echo "Nenhum dispositivo USB com Kali Live foi encontrado."
     exit 1
-elif [[ ${#kali_live_devices[@]} -eq 1 ]]; then
-    kali_live_device="${kali_live_devices[0]}"
-else
-    echo "Vários dispositivos USB com Kali Live foram encontrados."
-    echo -e "\nSelecione o dispositivo USB que contém o Kali Live:"
-    for ((i=0; i<${#kali_live_devices[@]}; i++)); do
-        echo "$((i+1)). ${kali_live_devices[i]}"
-    done
-
-    read -p $'\nEscolha uma opção: ' choice
-
-    if [[ ! "$choice" =~ ^[0-9]+$ || "$choice" -lt 1 || "$choice" -gt ${#kali_live_devices[@]} ]]; then
-        echo "Opção inválida."
-        exit 1
-    fi
-
-    kali_live_device="${kali_live_devices[$((choice-1))]}"
 fi
 
 # Adiciona persistência ao Kali Live
